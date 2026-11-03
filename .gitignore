@@ -13,3 +13,7 @@ data/
 
 # Editor scratch files
 tempCodeRunnerFile.py
+
+# Ground-truth labels and raw evaluation outputs (kept private)
+labels/
+*_eval_results.txt
