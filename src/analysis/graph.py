@@ -33,14 +33,16 @@ def build_bipartite_graph(
     features: FeatureSet,
     profiles: dict[str, ArtistProfile],
     weights: dict | None = None,
+    leave_one_out: bool = True,
 ) -> nx.Graph:
     """Return a weighted bipartite graph of tracks and candidate artists.
 
     Artist nodes carry ``type="artist"``; track nodes carry ``type="track"`` plus
     their ``credited_artist_id``. Each track connects to every artist with
-    ``weight`` equal to that track's compatibility score for the artist.
+    ``weight`` equal to that track's compatibility score for the artist. See
+    :func:`~src.analysis.scoring.compute_score_matrix` for ``leave_one_out``.
     """
-    matrix, artist_ids = compute_score_matrix(features, profiles, weights)
+    matrix, artist_ids = compute_score_matrix(features, profiles, weights, leave_one_out=leave_one_out)
     graph = nx.Graph()
 
     for artist_id in artist_ids:

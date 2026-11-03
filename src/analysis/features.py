@@ -38,7 +38,7 @@ class FeatureSet:
 
 
 def _release_year(values: pd.Series) -> pd.Series:
-    return pd.to_numeric(values.astype("string").str.extract(r"^(\\d{4})")[0], errors="coerce")
+    return pd.to_numeric(values.astype("string").str.extract(r"^(\d{4})")[0], errors="coerce")
 
 
 def _collaborator_documents(frame: pd.DataFrame) -> list[str]:

@@ -39,8 +39,15 @@ def _trial(base_frame, rng, thresholds):
     impostor_mask[impostor_rows] = True
     for row in impostor_rows:
         true_id = str(frame.at[row, "artist_id"])
-        others = [a for a in artist_ids if a != true_id]
-        frame.at[row, "artist_id"] = rng.choice(others)
+        new_id = rng.choice([a for a in artist_ids if a != true_id])
+        frame.at[row, "artist_id"] = new_id
+        # Realistic misattribution: credited ids point to the wrong artist too.
+        credited = str(frame.at[row, "credited_artist_ids"])
+        parts = credited.split("|") if credited and credited != "nan" else []
+        rewritten = [new_id if p == true_id else p for p in parts]
+        if new_id not in rewritten:
+            rewritten = [new_id] + rewritten
+        frame.at[row, "credited_artist_ids"] = "|".join(dict.fromkeys(rewritten))
 
     with tempfile.TemporaryDirectory() as td:
         csv = Path(td) / "inj.csv"
