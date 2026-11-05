@@ -17,3 +17,14 @@ tempCodeRunnerFile.py
 # Ground-truth labels and raw evaluation outputs (kept private)
 labels/
 *_eval_results.txt
+
+# MusicBrainz resolution cache (generated under the ignored labels/ tree)
+labels/.mb_cache/
+
+# Reddit discovery-hint candidates (generated under the ignored data/ tree)
+data/reddit_name_candidates.txt
+
+# Example WITCH label files are NOT present on disk today; if they are ever
+# generated and you want to track them, add negated unignore lines here, e.g.:
+# !labels/answer_key_WITCH.csv
+# !labels/labels_WITCH.csv

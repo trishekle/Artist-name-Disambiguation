@@ -39,6 +39,7 @@ TRACK_COLUMNS = [
     "album_id",
     "album_name",
     "duration_ms",
+    "isrc",
     "explicit",
     "track_number",
     "disc_number",
@@ -199,6 +200,7 @@ def get_artist_tracks(artist_id: str, artist_name: str) -> pd.DataFrame:
                     "album_id": album["id"],
                     "album_name": album["name"],
                     "duration_ms": track.get("duration_ms"),
+                    "isrc": None,
                     "explicit": track.get("explicit"),
                     "track_number": track.get("track_number"),
                     "disc_number": track.get("disc_number"),
@@ -216,6 +218,35 @@ def get_artist_tracks(artist_id: str, artist_name: str) -> pd.DataFrame:
     return pd.DataFrame(tracks, columns=TRACK_COLUMNS)
 
 
+TRACK_BATCH_LIMIT = 50
+
+
+def enrich_isrcs(tracks_df: pd.DataFrame) -> pd.DataFrame:
+    """Populate the isrc column from full track objects (GET /v1/tracks).
+
+    The album-tracks endpoint omits external_ids, so ISRCs are fetched in a
+    second pass over the full /v1/tracks objects (<=50 ids per request) and
+    mapped back onto rows by track_id. Reuses spotify_get, so this pass
+    inherits wait_for_request_slot pacing and 429 Retry-After/backoff retries.
+    """
+    if tracks_df.empty:
+        return tracks_df
+    track_ids = [tid for tid in tracks_df["track_id"].dropna().unique().tolist()]
+    isrc_by_track_id: dict[str, str] = {}
+    for start in range(0, len(track_ids), TRACK_BATCH_LIMIT):
+        batch = track_ids[start : start + TRACK_BATCH_LIMIT]
+        response = spotify_get(f"{API_BASE_URL}/tracks", {"ids": ",".join(batch)})
+        for track in response.get("tracks", []):
+            if not track:
+                continue
+            isrc = track.get("external_ids", {}).get("isrc")
+            if isrc:
+                isrc_by_track_id[track["id"]] = isrc
+    if isrc_by_track_id:
+        tracks_df["isrc"] = tracks_df["track_id"].map(isrc_by_track_id).fillna(tracks_df["isrc"])
+    return tracks_df
+
+
 def ingest_verified_artists(artists: list[dict]) -> pd.DataFrame:
     if not artists:
         raise RuntimeError(f"No verified artists configured in {ARTISTS_FILE}.")
@@ -225,7 +256,8 @@ def ingest_verified_artists(artists: list[dict]) -> pd.DataFrame:
         artist_df = get_artist_tracks(artist["id"], artist["name"])
         print(f"  Tracks found: {len(artist_df)}")
         artist_frames.append(artist_df)
-    return pd.concat(artist_frames, ignore_index=True).drop_duplicates(subset="track_id")
+    tracks_df = pd.concat(artist_frames, ignore_index=True).drop_duplicates(subset="track_id")
+    return enrich_isrcs(tracks_df)
 
 
 def output_file_for_artists(artists: list[dict]) -> Path:
