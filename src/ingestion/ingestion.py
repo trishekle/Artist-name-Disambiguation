@@ -218,30 +218,30 @@ def get_artist_tracks(artist_id: str, artist_name: str) -> pd.DataFrame:
     return pd.DataFrame(tracks, columns=TRACK_COLUMNS)
 
 
-TRACK_BATCH_LIMIT = 50
-
-
 def enrich_isrcs(tracks_df: pd.DataFrame) -> pd.DataFrame:
-    """Populate the isrc column from full track objects (GET /v1/tracks).
+    """Populate the isrc column from full track objects (GET /v1/tracks/{id}).
 
     The album-tracks endpoint omits external_ids, so ISRCs are fetched in a
-    second pass over the full /v1/tracks objects (<=50 ids per request) and
-    mapped back onto rows by track_id. Reuses spotify_get, so this pass
+    second pass, one track per request, and mapped back onto rows by track_id.
+    The batch endpoint (GET /v1/tracks?ids=...) returns 403 for this app, so
+    single-track calls are used instead. Reuses spotify_get, so this pass
     inherits wait_for_request_slot pacing and 429 Retry-After/backoff retries.
+    A track that fails to fetch keeps isrc=None rather than aborting the run.
     """
     if tracks_df.empty:
         return tracks_df
     track_ids = [tid for tid in tracks_df["track_id"].dropna().unique().tolist()]
     isrc_by_track_id: dict[str, str] = {}
-    for start in range(0, len(track_ids), TRACK_BATCH_LIMIT):
-        batch = track_ids[start : start + TRACK_BATCH_LIMIT]
-        response = spotify_get(f"{API_BASE_URL}/tracks", {"ids": ",".join(batch)})
-        for track in response.get("tracks", []):
-            if not track:
-                continue
-            isrc = track.get("external_ids", {}).get("isrc")
-            if isrc:
-                isrc_by_track_id[track["id"]] = isrc
+    print(f"\nFetching ISRCs for {len(track_ids)} tracks (1 request each)...")
+    for track_id in track_ids:
+        try:
+            track = spotify_get(f"{API_BASE_URL}/tracks/{track_id}")
+        except RuntimeError as error:
+            print(f"  ISRC lookup failed for {track_id}: {error}")
+            continue
+        isrc = (track or {}).get("external_ids", {}).get("isrc")
+        if isrc:
+            isrc_by_track_id[track_id] = isrc
     if isrc_by_track_id:
         tracks_df["isrc"] = tracks_df["track_id"].map(isrc_by_track_id).fillna(tracks_df["isrc"])
     return tracks_df

@@ -19,6 +19,7 @@ Usage:
   python tools/evaluate_dataset.py                 # score all discovered groups
   python tools/evaluate_dataset.py WITCH NIRVANA   # score only the named groups
   python tools/evaluate_dataset.py --self-test     # offline sanity check, no data
+  python tools/evaluate_dataset.py --threshold 0.06  # real-data FPR at a gap cutoff
 """
 
 import argparse
@@ -66,6 +67,46 @@ def pooled_metrics(results):
     }
 
 
+def real_fpr_at_threshold(groups, threshold, labels_dir=LABELS_DIR):
+    """False-positive rate on verified-correct tracks if flag = gap > threshold.
+
+    Uses the answer key's ``gap`` (best-fit score minus credited score, >= 0),
+    which equals the injection eval's score_gap whenever that is positive, so a
+    threshold chosen from tools/injection_eval.py applies here unchanged.
+    Returns (per_group list of (group, flagged, n_correct), pooled_flagged, pooled_n).
+    """
+    labels_dir = Path(labels_dir)
+    per_group, total_flagged, total_n = [], 0, 0
+    for group in groups:
+        labels_path = labels_dir / f"labels_{group}.csv"
+        key_path = labels_dir / f"answer_key_{group}.csv"
+        if not labels_path.exists() or not key_path.exists():
+            continue
+        labels = pd.read_csv(labels_path, dtype=str)
+        key = pd.read_csv(key_path)
+        verdict = labels["your_verdict"].fillna("").str.strip().str.lower()
+        correct_ids = set(labels.loc[verdict == "correct", "track_id"])
+        clean = key[key["track_id"].astype(str).isin(correct_ids)]
+        flagged = int((clean["gap"].astype(float) > threshold).sum())
+        per_group.append((group, flagged, len(clean)))
+        total_flagged += flagged
+        total_n += len(clean)
+    return per_group, total_flagged, total_n
+
+
+def report_threshold(groups, threshold, labels_dir=LABELS_DIR):
+    """Print the real-data false-positive rate at a fixed gap threshold."""
+    per_group, flagged, n = real_fpr_at_threshold(groups, threshold, labels_dir)
+    print(f"\n=== Real-data false-positive rate at gap > {threshold} ===")
+    print("(MusicBrainz-verified 'correct' tracks only; compare with the injection")
+    print(" eval's FPR at the same threshold to see if it holds on real data.)\n")
+    for group, g_flagged, g_n in per_group:
+        rate = g_flagged / g_n if g_n else float("nan")
+        print(f"  {group:<16} {g_flagged:>3}/{g_n:<4} flagged  ({pct(rate)})")
+    if n:
+        print(f"  {'POOLED':<16} {flagged:>3}/{n:<4} flagged  ({pct(flagged / n)})")
+
+
 def report(groups, labels_dir=LABELS_DIR):
     """Score each group, print the per-group table + pooled totals.
 
@@ -97,6 +138,25 @@ def report(groups, labels_dir=LABELS_DIR):
         print(f"  TP = {pooled['tp']}   FP = {pooled['fp']}   "
               f"FN = {pooled['fn']}   TN = {pooled['tn']}")
         print(f"  Pooled accuracy: {pct(pooled['accuracy'])}")
+
+        negatives = pooled["fp"] + pooled["tn"]
+        positives = pooled["tp"] + pooled["fn"]
+        if negatives:
+            fp_rate = pooled["fp"] / negatives
+            print(f"\nFalse-positive rate (clean tracks flagged): "
+                  f"{pct(fp_rate)}  ({pooled['fp']}/{negatives})")
+        if positives == 0:
+            print("\nNOTE: no real misattributions in the labeled data "
+                  "(0 'misattributed' verdicts).")
+            print("  Recall and F1 are undefined, and precision is meaningless "
+                  "(0 true errors to find).")
+            print("  Only the false-positive rate above is a valid real-data "
+                  "measurement here.")
+            print("  Use tools/injection_eval*.py for recall, or add real "
+                  "misattributed cases.")
+        elif positives < 10:
+            print(f"\nCaveat: only {positives} real misattributions; "
+                  "recall/precision are very noisy.")
     else:
         print("\nNo scored rows across any group yet - nothing to pool.")
 
@@ -163,6 +223,10 @@ def main(argv=None):
                         help="Limit scoring to these group names (default: all discovered).")
     parser.add_argument("--self-test", action="store_true",
                         help="Run an offline sanity check of the scoring math and exit.")
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="Also report the real-data false-positive rate when "
+                             "flagging only tracks with gap > THRESHOLD "
+                             "(e.g. 0.06, chosen from tools/injection_eval.py).")
     args = parser.parse_args(argv)
 
     if args.self_test:
@@ -175,6 +239,8 @@ def main(argv=None):
         return 0
 
     report(groups)
+    if args.threshold is not None:
+        report_threshold(groups, args.threshold)
     return 0
 
 
