@@ -28,3 +28,7 @@ data/reddit_name_candidates.txt
 # generated and you want to track them, add negated unignore lines here, e.g.:
 # !labels/answer_key_WITCH.csv
 # !labels/labels_WITCH.csv
+
+# Agent/workflow planning notes (private)
+.agents/
+.worktrees/
