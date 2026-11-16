@@ -25,7 +25,16 @@ Metrics
 
 Averaged over several random trials so the numbers are stable.
 
-Usage: python tools/injection_eval.py [GROUP] [N_INJECT] [N_TRIALS]
+* threshold sweep     = recall / FPR / precision at a realistic base rate as the
+                        gap cutoff moves. Injection plants ~10 errors per group,
+                        far above reality (~1%), so raw precision is inflated;
+                        the sweep rescales it to the assumed BASE_RATE.
+
+Usage: python tools/injection_eval.py [GROUP] [N_INJECT] [N_TRIALS] [BASE_RATE] [THRESHOLD]
+
+THRESHOLD adds a "CHOSEN" row for a fixed gap cutoff, so a value picked on one
+group (e.g. 0.06 from Morphine's FPR~5% row) can be checked on another:
+  python tools/injection_eval.py WITCH 10 20 0.01 0.06
 """
 
 import sys
@@ -46,6 +55,10 @@ from src.analysis.scoring import score_tracks
 GROUP = sys.argv[1] if len(sys.argv) > 1 else "WITCH"
 N_INJECT = int(sys.argv[2]) if len(sys.argv) > 2 else 10
 N_TRIALS = int(sys.argv[3]) if len(sys.argv) > 3 else 20
+# Assumed real-world share of misattributed tracks, used to rescale precision.
+BASE_RATE = float(sys.argv[4]) if len(sys.argv) > 4 else 0.01
+# Optional fixed gap cutoff to test (e.g. one chosen on another group).
+THRESHOLD = float(sys.argv[5]) if len(sys.argv) > 5 else None
 BASE_SEED = 1234
 
 
@@ -105,18 +118,66 @@ def _run_once(base_frame: pd.DataFrame, rng: np.random.Generator):
     return (recall, fp, auc,
             int((flagged & imp).sum()), int(imp.sum()),
             int((flagged & clean).sum()), int(clean.sum()),
-            len(artist_ids))
+            len(artist_ids), gap, imp)
+
+
+def precision_at_base_rate(recall: float, fpr: float, base_rate: float) -> float:
+    """Expected precision if only ``base_rate`` of real tracks are misattributed.
+
+    Injection plants far more errors than reality has, so its raw precision is
+    inflated. This rescales: TP ~ recall * base_rate, FP ~ fpr * (1 - base_rate).
+    """
+    tp = recall * base_rate
+    fp = fpr * (1 - base_rate)
+    return tp / (tp + fp) if (tp + fp) else float("nan")
+
+
+def threshold_sweep(gaps: np.ndarray, imp: np.ndarray, base_rate: float) -> None:
+    """Print recall / FPR / base-rate precision as the flag threshold moves.
+
+    Flag rule here is ``gap > threshold`` (the default rule is threshold 0).
+    Thresholds are chosen from the clean-track gap distribution so each row
+    hits a target false-positive rate, plus the default cutoff of 0 (which
+    matches the best-fit != assigned rule used in the summary above).
+    """
+    clean_gaps = gaps[~imp]
+    imp_gaps = gaps[imp]
+    rows = []
+    for target_fpr in [0.20, 0.10, 0.05, 0.02, 0.01]:
+        rows.append((f"FPR~{target_fpr:.0%}", float(np.quantile(clean_gaps, 1 - target_fpr))))
+    rows.append(("default (0)", 0.0))
+    if THRESHOLD is not None:
+        rows.append(("CHOSEN", THRESHOLD))
+
+    print(f"\n=== Threshold sweep (pooled over trials; flag = gap > threshold) ===")
+    print(f"Precision column assumes a real misattribution base rate of {base_rate:.1%}.\n")
+    print(f"{'target':>12} | {'threshold':>9} | {'recall':>7} | {'FPR':>6} | "
+          f"{'precision@base':>14} | {'reviews per real error':>22}")
+    print("-" * 86)
+    for label, thr in rows:
+        recall = float((imp_gaps > thr).mean()) if len(imp_gaps) else float("nan")
+        fpr = float((clean_gaps > thr).mean()) if len(clean_gaps) else float("nan")
+        prec = precision_at_base_rate(recall, fpr, base_rate)
+        per_error = f"{1 / prec:.1f}" if prec and prec == prec else "n/a"
+        print(f"{label:>12} | {thr:>9.4f} | {recall:>6.1%} | {fpr:>5.1%} | "
+              f"{prec:>13.1%} | {per_error:>22}")
+    print("\nReading it: pick the row whose 'reviews per real error' a reviewer can live with.")
+    print("Recall/FPR come from synthetic injection; check FPR against the real-data")
+    print("false-positive rate from tools/evaluate_dataset.py (MusicBrainz-verified tracks).")
 
 
 def main():
     base = data_source.load_group(GROUP).frame.copy()
     recalls, fps, aucs = [], [], []
+    all_gaps, all_imp = [], []
     tfi = ti = tfc = tc = 0
     n_artists = base["artist_id"].astype(str).nunique()
 
     for t in range(N_TRIALS):
         rng = np.random.default_rng(BASE_SEED + t)
-        recall, fp, auc, fi, n_imp, fc, n_clean, n_art = _run_once(base, rng)
+        recall, fp, auc, fi, n_imp, fc, n_clean, n_art, gap, imp = _run_once(base, rng)
+        all_gaps.append(gap)
+        all_imp.append(imp)
         recalls.append(recall)
         fps.append(fp)
         if auc == auc:
@@ -139,6 +200,8 @@ def main():
         print("      AUC ~0.50 = no signal in metadata;  >0.5 = real signal.")
     else:
         print("  ROC AUC: undefined (need both classes with varied gaps).")
+
+    threshold_sweep(np.concatenate(all_gaps), np.concatenate(all_imp), BASE_RATE)
 
 
 if __name__ == "__main__":
